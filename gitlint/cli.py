@@ -19,9 +19,11 @@ from gitlint.lint import GitLinter
 from gitlint.config import LintConfigBuilder, LintConfigError, LintConfigGenerator
 from gitlint.git import GitContext, GitContextError, git_version
 from gitlint import hooks
+from gitlint.shell import shell
 from gitlint.utils import ustr, LOG_FORMAT
 
 DEFAULT_CONFIG_FILE = ".gitlint"
+DEFAULT_COMMIT_MSG_EDITOR = "vim"
 
 # Since we use the return code to denote the amount of errors, we need to change the default click usage error code
 click.UsageError.exit_code = USAGE_ERROR_CODE
@@ -311,6 +313,62 @@ def uninstall_hook(ctx):
         click.echo(ustr(e), err=True)
         ctx.exit(GIT_CONTEXT_ERROR_CODE)
 
+@cli.command("run-hook")
+@click.option('--msg-filename', required=True, type=click.File(), help="Path to a file containing a commit-msg.")
+@click.pass_context
+def run_hook(ctx, msg_filename):
+    """ Runs the gitlint commit-msg hook. """
+
+    def run_gitlint():
+        click.echo(u"gitlint: checking commit message...")
+        # Move filepointer back to the start, so we can reread the msg file if we've read it before
+        msg_filename.seek(0)
+        ctx.obj = (ctx.obj[0], ctx.obj[1], ctx.obj[2], msg_filename)
+        ctx.invoke(lint)
+
+    exit_code = 1
+    while exit_code > 0:
+        try:
+            run_gitlint()
+            click.echo(u"gitlint: " + click.style("OK", fg='green') + u" (no violations in commit message)")
+        except click.exceptions.Exit as e:
+            click.echo(u"-----------------------------------------------")
+            click.echo(u"gitlint: " + click.style("Your commit message contains the above violations.", fg='red'))
+            
+            # TODO (jorisroovers): deal with no stdin available
+
+            value = "undecided"
+            while value not in ["y", "n", "e"]:
+                click.echo("Continue with commit anyways (this keeps the current commit message)? " +
+                                    "[y(es)/n(no)/e(dit)] ", nl=False)
+                value = input()
+                
+                # Why not use click prompt?
+                # https://github.com/pallets/click/issues/1370
+                # https://github.com/pallets/click/pull/1372
+                 
+                # From https://click.palletsprojects.com/en/7.x/utils/#getting-characters-from-terminal
+                # Note that this function will always read from the terminal, even if stdin is instead a pipe.
+                # value = click.getchar(echo=True).lower()
+                # click.getchar() # capture newline
+                # click.echo()
+            
+            if value == "y":
+                ctx.exit(0)
+            elif value == "e":
+                editor = os.environ.get("EDITOR", DEFAULT_COMMIT_MSG_EDITOR)
+                shell([editor, msg_filename.name])
+            elif value == "n":
+                click.echo(u"Commit aborted.")
+                click.echo(u"Your commit message: ")
+                click.echo(u"-----------------------------------------------")
+                # Move filepointer back to the start, so we can reread the file if we've read it before
+                msg_filename.seek(0)
+                click.echo(ustr(msg_filename.read()), nl=False)
+                click.echo(u"-----------------------------------------------")
+                ctx.exit(e.exit_code)
+
+            exit_code = e.exit_code
 
 @cli.command("generate-config")
 @click.pass_context
